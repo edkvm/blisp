@@ -70,7 +70,7 @@ struct lenv{
 ** Function Declaration 
 */
 lval* lval_num(long x);
-lval* lval_err(char* m);
+lval* lval_err(char* fmt, ...);
 lval* lval_sym(char* s);
 lval* lval_sexpr(void);
 void lval_del(lval* v);
@@ -86,6 +86,7 @@ lval* lval_pop(lval* v, int i);
 lval* lval_take(lval* v, int i);
 lval* lval_join(lval* x, lval* y);
 lval* lval_copy(lval* v);
+
 lval* builtin_op(lenv* e, lval* a, char* op);
 lval* builtin_head(lenv* e, lval* a);
 lval* builtin_tail(lenv* e, lval* a);
@@ -94,11 +95,17 @@ lval* builtin_eval(lenv* e, lval* a);
 lval* builtin_join(lenv* e, lval* a);
 lval* builtin(lval* a, char* func);
 
+char* ltype_name(int t);
 
 /*
 ** Macro
 */
-#define LASSERT(args, cond, err) if(!(cond)) { lval_del(args); return lval_err(err); }
+#define LASSERT(args, cond, fmt, ...)  \
+	if(!(cond)) {  \
+		lval* err = lval_err(fmt, ##__VA_ARGS__); \
+		lval_del(args); \
+		return err; \
+	}
 
 
 lenv* lenv_new(void){
@@ -129,7 +136,7 @@ lval* lenv_get(lenv* e, lval* k){
 		}
 	}
 
-	return lval_err("unbound symbole");
+	return lval_err("ERROR: Unbound Symbol '%s'", k->sym);
 }
 
 void lenv_put(lenv* e, lval* k, lval* v){
@@ -164,15 +171,8 @@ lval* lval_num(long x){
 	return v;
 }
 
-/* Create a new lval type error*/
-lval* lval_err(char* m){
-	lval* v = malloc(sizeof(lval));
-	v->type = LVAL_ERR;
-	v->err = malloc(strlen(m) + 1);
-	strcpy(v->err, m);
 
-	return v;
-}
+
 
 lval* lval_sym(char* s){
 	lval* v = malloc(sizeof(lval));
@@ -202,6 +202,28 @@ lval* lval_fun(lbuiltin func){
 	lval* v= malloc(sizeof(lval));
 	v->type = LVAL_FUN;
 	v->fun = func;
+	return v;
+}
+
+/* Create a new lval type error*/
+lval* lval_err(char* fmt, ...){
+	
+	lval* v = malloc(sizeof(lval));
+	v->type = LVAL_ERR;
+
+	va_list va;
+	
+	va_start(va, fmt);
+
+	/* Allocate space */
+	v->err = malloc(512);
+
+	vsnprintf(v->err, 511, fmt, va);
+
+	v->err = realloc(v->err, strlen(v->err)+1);
+
+	va_end(va);
+
 	return v;
 }
 
@@ -340,7 +362,7 @@ void lval_print(lval* v){
 			break;
 		/* if lval is an error print the appropriate error message*/
 		case LVAL_ERR:
-			printf("Error: %s", v->err);
+			printf("ERROR: %s", v->err);
 			break;
 		case LVAL_SYM:
 			printf("%s", v->sym);
@@ -406,10 +428,10 @@ lval* builtin_op(lenv* e, lval* a, char* op){
 	
 	// Ensure all arguments are numbers
 	for(int i = 0; i < a->count; i++){
-		if(a->cell[i]->type != LVAL_NUM) {
-			lval_del(a);
-			return lval_err("Cannot operate on non-number!");
-		}
+		LASSERT(a,
+			(a->cell[i]->type == LVAL_NUM)
+			,"Function '%s' passed incorrect type for argument %i. Got %s, Expected %s",
+			op, i, ltype_name(a->cell[i]->type), ltype_name(LVAL_NUM));
 	}
 
 	// Pop first element
@@ -452,11 +474,26 @@ lval* builtin_op(lenv* e, lval* a, char* op){
 	return x;
 }
 
+char* ltype_name(int t){
+	switch(t){
+		case LVAL_QEXPR: return "Q-Expression";
+		case LVAL_SEXPR: return "S-Expression";
+		case LVAL_NUM: 	 return "Number";
+		case LVAL_SYM:   return "Symbole";
+		case LVAL_FUN:	 return "Function";
+		case LVAL_ERR:	 return "Error";
+		default: return "Unknown";
+	}
+}
 lval* builtin_head(lenv* e, lval* a){
 	
 	// Check for errors
-	LASSERT(a, (a->count == 1), "Function 'head' passed too many arguments");
-	LASSERT(a, (a->cell[0]->type == LVAL_QEXPR), "Function 'head' passed incorrect types!");
+	LASSERT(a, (a->count == 1), 
+		"Function 'head' passed too many arguments, Got %i, Expected %i",
+		a->count, 1);
+	LASSERT(a, (a->cell[0]->type == LVAL_QEXPR), 
+		"Function 'head' passed incorrect types!",
+	 	ltype_name(a->cell[0]->type), ltype_name(LVAL_QEXPR));
 	LASSERT(a, (a->cell[0]->count != 0), "Function 'head' passed {}!");
 	
 
@@ -472,8 +509,12 @@ lval* builtin_head(lenv* e, lval* a){
 lval* builtin_tail(lenv* e, lval* a){
 	
 	// Check for errors
-	LASSERT(a, (a->count == 1), "Function 'tail' passed too many arguments");
-	LASSERT(a, (a->cell[0]->type == LVAL_QEXPR), "Function 'tail' passed incorrect types!");
+	LASSERT(a, (a->count == 1), 
+		"Function 'tail' passed too many arguments, Got %i, Expected %i",
+		a->count, 1);
+	LASSERT(a, (a->cell[0]->type == LVAL_QEXPR), 
+		"Function 'tail' passed incorrect types!",
+	 	ltype_name(a->cell[0]->type), ltype_name(LVAL_QEXPR));
 	LASSERT(a, (a->cell[0]->count != 0), "Function 'tail' passed {}!");
 	
 
@@ -492,8 +533,12 @@ lval* builtin_list(lenv* e, lval* a){
 }
 
 lval* builtin_eval(lenv* e, lval* a){
-	LASSERT(a, (a->count == 1), "Function 'eval' passed too many arguments!");
-	LASSERT(a, (a->cell[0]->type == LVAL_QEXPR), "Function 'eval' passed incorrect type!");
+	LASSERT(a, (a->count == 1), 
+		"Function 'eval' passed too many arguments, Got %i, Expected %i",
+		a->count, 1);
+	LASSERT(a, (a->cell[0]->type == LVAL_QEXPR), 
+		"Function 'eval' passed incorrect types!",
+	 	ltype_name(a->cell[0]->type), ltype_name(LVAL_QEXPR));
 
 	lval* x = lval_take(a, 0);
 	x->type = LVAL_SEXPR;
@@ -517,6 +562,27 @@ lval* builtin_join(lenv* e, lval* a){
 	return x;
 }
 
+lval* builtin_def(lenv* e, lval* a){
+	LASSERT(a, (a->cell[0]->type == LVAL_QEXPR), "Function 'def' passed incorrect type");
+
+	lval* syms = a->cell[0];
+
+	/* Ensure all elments are symbols */
+	for(int i = 0; i < syms->count; i++){
+		LASSERT(a, (syms->cell[i]->type == LVAL_SYM),"Function 'def' cannot define non-symbole");
+	}
+
+	/* Check correct number of symbols and values */
+	LASSERT(a, (syms->count == a->count-1), "Function 'def' cannot define incorrect number of values to symbols");
+
+	for(int i = 0; i < syms->count; i++){
+		lenv_put(e, syms->cell[i], a->cell[i+1]);
+	}
+
+	lval_del(a);
+	return lval_sexpr();
+
+}
 
 lval* lval_join(lval* x, lval* y){
 	
@@ -539,6 +605,8 @@ void lenv_add_builtin(lenv* e, char* name, lbuiltin func){
 }
 
 void lenv_add_builtins(lenv* e){
+	
+	lenv_add_builtin(e, "def", builtin_def);
 
 	lenv_add_builtin(e, "list", builtin_list);
 	lenv_add_builtin(e, "head", builtin_head);
@@ -607,8 +675,9 @@ lval* lval_eval_sexpr(lenv* e, lval* v){
 	return result;
 }
 
+
 int main(int argc,char** argv){
-	puts("Lisp version 0.0.5");
+	puts("Lisp version 0.0.7");
 	puts("Precc Command + C to Exit\n");
 
 	mpc_parser_t* Number = mpc_new("number");
