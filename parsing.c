@@ -625,6 +625,7 @@ lval* builtin_cmp(lenv* e, lval* a, char* op){
 	if(strcmp(op, "!=") == 0){
 		r = !lval_eq(a->cell[0],a->cell[1]);
 	}
+
 	lval_del(a);
 
 	return lval_num(r);
@@ -636,6 +637,31 @@ lval* builtin_eq(lenv* e, lval* a){
 
 lval* builtin_ne(lenv* e, lval* a){
 	return builtin_cmp(e, a, "!=");
+}
+
+lval* builtin_if(lenv* e, lval* a){
+	LASSERT_ARGS("if", a, 3);
+	LASSERT_TYPE("if", a, 0, LVAL_NUM);
+	LASSERT_TYPE("if", a, 1, LVAL_QEXPR);
+	LASSERT_TYPE("if", a, 2, LVAL_QEXPR);
+
+	/* Mark both expressions as evaluable */
+	lval* x;
+	a->cell[1]->type = LVAL_SEXPR;
+	a->cell[2]->type = LVAL_SEXPR;
+
+
+	if(a->cell[0]->num){
+		/* If condition is true, evaluate first */
+		x = lval_eval(e, lval_pop(a,1));
+	} else {
+		/* Otherwise evalute second expression */
+		x = lval_eval(e, lval_pop(a,2));
+	}
+
+	lval_del(a);
+
+	return x;
 }
 
 lval* builtin_head(lenv* e, lval* a){
@@ -795,6 +821,7 @@ void lenv_add_builtin(lenv* e, char* name, lbuiltin func){
 
 void lenv_add_builtins(lenv* e){
 
+	lenv_add_builtin(e, "if", builtin_if);
 	lenv_add_builtin(e, ">", builtin_gt);
 	lenv_add_builtin(e, "<", builtin_lt);
 	lenv_add_builtin(e, ">=", builtin_gte);
@@ -824,10 +851,10 @@ int lval_eq(lval* x, lval* y){
 	if(x->type != y->type){
 		return 0;
 	}
-
+	
 	switch(x->type){
 		case LVAL_NUM:
-			return (x->type == y->type);
+			return (x->num == y->num);
 			
 		case LVAL_ERR:
 			return (strcmp(x->err, y->err) == 0);
@@ -1020,7 +1047,7 @@ char* ltype_name(int t){
 }
 
 int main(int argc,char** argv){
-	puts("Lisp version 0.0.9");
+	puts("Lisp version 0.0.10");
 	puts("Precc Command + C to Exit\n");
 
 	mpc_parser_t* Number = mpc_new("number");
