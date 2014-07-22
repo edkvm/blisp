@@ -99,6 +99,7 @@ lval* lval_pop(lval* v, int i);
 lval* lval_take(lval* v, int i);
 lval* lval_join(lval* x, lval* y);
 lval* lval_copy(lval* v);
+int   lval_eq(lval* x, lval* y);
 
 void  lval_print(lval* v);
 void  lval_println(lval* v);
@@ -113,6 +114,7 @@ lval* builtin(lval* a, char* func);
 lval* builtin_var(lenv* e, lval* a, char* func);
 lval* builtin_def(lenv* e, lval* a);
 lval* builtin_put(lenv* e, lval* a);
+lval* builtin_cmp(lenv* e, lval* a, char* op);
 
 char* ltype_name(int t);
 
@@ -132,7 +134,10 @@ char* ltype_name(int t);
 		 func, index, ltype_name(args->cell[index]->type), ltype_name(expect))
 		
 		
-	
+#define LASSERT_ARGS(op, args, expect) \
+	LASSERT(args, (args->count == expect), \
+		"Function '%s' passed wrong number of arguments, Got %i, Expected %i", \
+		op, args->count, expect)	
 		
 
 lenv* lenv_new(void){
@@ -569,6 +574,69 @@ lval* builtin_op(lenv* e, lval* a, char* op){
 	return x;
 }
 
+lval* builtin_ord(lenv* e, lval* a,char* op){
+	
+	LASSERT_ARGS(op, a, 2);
+	LASSERT_TYPE(op, a, 0, LVAL_NUM);
+	LASSERT_TYPE(op, a, 1, LVAL_NUM);
+	
+	int r;
+	if(strcmp(op, "<") == 0) {
+		r = (a->cell[0]->num < a->cell[1]->num);
+	}
+	if(strcmp(op, ">") == 0) {
+		r = (a->cell[0]->num > a->cell[1]->num);
+	}
+	if(strcmp(op, ">=") == 0) {
+		r = (a->cell[0]->num >= a->cell[1]->num);
+	}
+	if(strcmp(op, "<=") == 0) {
+		r = (a->cell[0]->num <= a->cell[1]->num);
+	}
+		
+	return lval_num(r);
+}
+
+lval* builtin_gt(lenv* e, lval* a){
+	return builtin_ord(e, a, ">");
+}
+
+lval* builtin_lt(lenv* e, lval* a){
+	return builtin_ord(e, a, "<");
+}
+
+lval* builtin_gte(lenv* e, lval* a){
+	return builtin_ord(e, a, ">=");
+}
+
+lval* builtin_lte(lenv* e, lval* a){
+	return builtin_ord(e, a, "<=");
+}
+
+lval* builtin_cmp(lenv* e, lval* a, char* op){
+	LASSERT_ARGS(op, a, 2);
+
+	int r;
+
+	if(strcmp(op, "==") == 0){
+		r = lval_eq(a->cell[0], a->cell[1]);
+	}
+
+	if(strcmp(op, "!=") == 0){
+		r = !lval_eq(a->cell[0],a->cell[1]);
+	}
+	lval_del(a);
+
+	return lval_num(r);
+}
+
+lval* builtin_eq(lenv* e, lval* a){
+	return builtin_cmp(e, a, "==");
+}
+
+lval* builtin_ne(lenv* e, lval* a){
+	return builtin_cmp(e, a, "!=");
+}
 
 lval* builtin_head(lenv* e, lval* a){
 	
@@ -726,7 +794,14 @@ void lenv_add_builtin(lenv* e, char* name, lbuiltin func){
 }
 
 void lenv_add_builtins(lenv* e){
-	
+
+	lenv_add_builtin(e, ">", builtin_gt);
+	lenv_add_builtin(e, "<", builtin_lt);
+	lenv_add_builtin(e, ">=", builtin_gte);
+	lenv_add_builtin(e, "<=", builtin_lte);
+	lenv_add_builtin(e, "==", builtin_eq);
+	lenv_add_builtin(e, "!=", builtin_ne);
+
 	lenv_add_builtin(e, "\\", builtin_lambda);
 	lenv_add_builtin(e, "def", builtin_def);
 	lenv_add_builtin(e, "=", builtin_put);
@@ -741,6 +816,50 @@ void lenv_add_builtins(lenv* e){
 	lenv_add_builtin(e, "-", builtin_sub);
 	lenv_add_builtin(e, "*", builtin_mul);
 	lenv_add_builtin(e, "/", builtin_div);
+}
+
+
+int lval_eq(lval* x, lval* y){
+
+	if(x->type != y->type){
+		return 0;
+	}
+
+	switch(x->type){
+		case LVAL_NUM:
+			return (x->type == y->type);
+			
+		case LVAL_ERR:
+			return (strcmp(x->err, y->err) == 0);
+		case LVAL_SYM:
+			return (strcmp(x->sym, y->sym) == 0);
+
+		case LVAL_FUN:
+			if(x->builtin || y->builtin){
+				return x->builtin == y->builtin;
+			} else {
+				return lval_eq(x->formals, y->formals) && lval_eq(x->body, y->body);
+			}
+
+		case LVAL_QEXPR:
+		case LVAL_SEXPR:
+			if(x->count != y->count) {
+				return 0;
+			} 
+			
+			/* Check that all elements are equal*/
+			for(int i = 0; i < x->count; i++){
+				/* If one is not equal than expression is false */
+				if(!lval_eq(x->cell[i], y->cell[i])){
+					return 0;
+				}
+			}
+
+			/* Otherwise return true */
+			return 1;
+	}
+
+	return 0;
 }
 
 lval* lval_call(lenv* e, lval* f, lval* a){
@@ -901,7 +1020,7 @@ char* ltype_name(int t){
 }
 
 int main(int argc,char** argv){
-	puts("Lisp version 0.0.8");
+	puts("Lisp version 0.0.9");
 	puts("Precc Command + C to Exit\n");
 
 	mpc_parser_t* Number = mpc_new("number");
