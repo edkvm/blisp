@@ -38,7 +38,7 @@ typedef struct lval lval;
 typedef struct lenv lenv;
 
 /* Enumeration for possible lval types */
-enum { LVAL_ERR, LVAL_NUM, LVAL_SYM, LVAL_STR, LVAL_SEXPR, LVAL_QEXPR, LVAL_FUN };
+enum { LVAL_ERR, LVAL_NUM, LVAL_SYM, LVAL_STR, LVAL_DBL, LVAL_SEXPR, LVAL_QEXPR, LVAL_FUN };
 
 /* Enumeration for possible error types */
 enum { LERR_DIV_ZERO, LERR_BAD_OP, LERR_BAD_NUM };
@@ -50,7 +50,7 @@ struct lval {
     int type;
     
     /* Number , Error and Symbol*/
-    long num;
+    double num;
     char* err;
     char* sym;
     char* str;
@@ -97,7 +97,7 @@ void  lenv_put(lenv* e, lval* k, lval* v);
 void  lenv_def(lenv* e, lval* k, lval* v);
 lenv* lenv_copy(lenv* e);
 
-lval* lval_num(long x);
+lval* lval_num(double x, int type);
 lval* lval_err(char* fmt, ...);
 lval* lval_sym(char* s);
 lval* lval_sexpr(void);
@@ -140,9 +140,13 @@ lval* builtin_error(lenv* e, lval* a);
 
 lval* builtin_cmp(lenv* e, lval* a, char* op);
 lval* builtin_var(lenv* e, lval* a, char* func);
+double builtin_op_helper(char* op, double x, double y);
+
 lval* builtin_load(lenv* e, lval* a);
 
+
 char* ltype_name(int t);
+lval* ltype_check(char* func, lval* a, int expect);
 
 /*
  ** Macro
@@ -181,14 +185,15 @@ void define_lang(void){
     
     mpca_lang(MPCA_LANG_DEFAULT,
               "                                                    \
-              number   : /-?[0-9]+/ ;                              \
+              number   : /-?[0-9]+([.][0-9]+)?/ ;                  \
               symbol   : /[a-zA-Z0-9_+\\-*\\/\\\\=<>!&]+/  ;       \
               string   : /\"(\\\\.|[^\"])*\"/ ;                    \
               comment  : /;[^\\r\\n]*/   ;                         \
               sexpr    : '(' <expr>* ')' ;                         \
               qexpr    : '{' <expr>* '}' ;                         \
-              expr     : <number> | <symbol> | <string> | <sexpr> | <qexpr> ; \
-              blisp    : /^/ <expr>* /$/ ;                                    \
+              expr     : <number> | <symbol> | <string>            \
+                        | <sexpr> | <qexpr> ;                      \
+              blisp    : /^/ <expr>* /$/ ;                         \
               ",
               Number, Symbol, String, Comment, Sexpr, Qexpr, Expr, Blisp);
     
@@ -288,9 +293,9 @@ lenv* lenv_copy(lenv* e){
  */
 
 /* Create a new lval type num*/
-lval* lval_num(long x){
+lval* lval_num(double x, int type){
     lval* v = malloc(sizeof(lval));
-    v->type = LVAL_NUM;
+    v->type = type;
     v->num = x;
     return v;
 }
@@ -483,10 +488,15 @@ void lval_expr_print(lval* v, char open, char close){
 }
 
 void lval_print(lval* v){
+    long temp;
     switch(v->type){
-            /* if lval typ is a number use regular printf */
+            /* if lval type is a number use regular printf */
         case LVAL_NUM:
-            printf("%1ld", v->num);
+            temp = (long)(v->num);
+            printf("%1ld", temp);
+            break;
+        case LVAL_DBL:
+            printf("%f", v->num);
             break;
             /* if lval is an error print the appropriate error message*/
         case LVAL_ERR:
@@ -576,12 +586,14 @@ lval* builtin_div(lenv* e, lval* a){
 
 lval* builtin_op(lenv* e, lval* a, char* op){
     
-    // Ensure all arguments are numbers
-    for(int i = 0; i < a->count; i++){
-        LASSERT(a,
-                (a->cell[i]->type == LVAL_NUM)
-                ,"Function '%s' passed incorrect type for argument %i. Got %s, Expected %s",
-                op, i, ltype_name(a->cell[i]->type), ltype_name(LVAL_NUM));
+    /* Ensure all arguments are numbers */
+    for(int i = 0; i < a->count; i++ ){
+        LASSERT(a, (a->cell[i]->type == LVAL_NUM || a->cell[i]->type == LVAL_DBL),
+                "Function '%s' passed incorrect types for argument %i. Got %s, Expected %s or %s",
+                op,
+                i,
+                ltype_name(a->cell[0]->cell[i]->type),
+                ltype_name(LVAL_NUM),ltype_name(LVAL_DBL));
     }
     
     // Pop first element
@@ -591,36 +603,51 @@ lval* builtin_op(lenv* e, lval* a, char* op){
     if((strcmp(op, "-") == 0) && a->count == 0){
         x->num = -x->num;
     }
-    
-    
+
+
     // While there are element remaning
     while( a->count > 0){
         
         lval* y = lval_pop(a,0);
         
-        // Perform operation
-        if(strcmp(op, "+") == 0) {  x->num += y->num;}
-        
-        if(strcmp(op, "-") == 0) {  x->num -= y->num;}
-        
-        if(strcmp(op, "*") == 0) {  x->num *= y->num;}
-        
-        if(strcmp(op, "/") == 0) {
-            // if value is equal to zero, return error
-            if(y->num == 0){
-                lval_del(x);
-                lval_del(y);
-                x = lval_err("Division By Zero!");
-                break;
-            }
-            x->num /= y->num;
+        if(strcmp(op, "/") == 0 && y->num == 0) {
+            lval_del(x);
+            lval_del(y);
+            x = lval_err("Division By Zero!");
+            break;
         }
+
+        // Perform operation
+
+        x->num = builtin_op_helper(op, x->num,y->num);
         
         lval_del(y);
     }
     
+    if(fmod(x->num , 1) != 0){
+        x->type = LVAL_DBL;
+    }
     lval_del(a);
     
+    return x;
+}
+
+double builtin_op_helper(char* op, double x, double y){
+    
+    if(strcmp(op, "+") == 0){
+        x += y;
+    }
+    
+    if(strcmp(op, "-") == 0) {  x -= y;}
+    
+    if(strcmp(op, "*") == 0) {  x *= y;}
+    
+    if(strcmp(op, "/") == 0) {
+        // if value is equal to zero, return error
+        
+        x /= y;
+    }  
+
     return x;
 }
 
@@ -644,7 +671,7 @@ lval* builtin_ord(lenv* e, lval* a,char* op){
         r = (a->cell[0]->num <= a->cell[1]->num);
     }
     
-    return lval_num(r);
+    return lval_num(r,LVAL_NUM);
 }
 
 lval* builtin_gt(lenv* e, lval* a){
@@ -678,7 +705,7 @@ lval* builtin_cmp(lenv* e, lval* a, char* op){
     
     lval_del(a);
     
-    return lval_num(r);
+    return lval_num(r, LVAL_NUM);
 }
 
 lval* builtin_eq(lenv* e, lval* a){
@@ -717,12 +744,8 @@ lval* builtin_if(lenv* e, lval* a){
 lval* builtin_head(lenv* e, lval* a){
     
     // Check for errors
-    LASSERT(a, (a->count == 1),
-            "Function 'head' passed too many arguments, Got %i, Expected %i",
-            a->count, 1);
-    LASSERT(a, (a->cell[0]->type == LVAL_QEXPR),
-            "Function 'head' passed incorrect types!",
-            ltype_name(a->cell[0]->type), ltype_name(LVAL_QEXPR));
+    LASSERT_ARGS("head", a, 1);
+    LASSERT_TYPE("head", a, 0, LVAL_QEXPR);
     LASSERT(a, (a->cell[0]->count != 0), "Function 'head' passed {}!");
     
     
@@ -738,12 +761,8 @@ lval* builtin_head(lenv* e, lval* a){
 lval* builtin_tail(lenv* e, lval* a){
     
     // Check for errors
-    LASSERT(a, (a->count == 1),
-            "Function 'tail' passed too many arguments, Got %i, Expected %i",
-            a->count, 1);
-    LASSERT(a, (a->cell[0]->type == LVAL_QEXPR),
-            "Function 'tail' passed incorrect types!",
-            ltype_name(a->cell[0]->type), ltype_name(LVAL_QEXPR));
+    LASSERT_ARGS("tail", a, 1);
+    LASSERT_TYPE("tail", a, 0, LVAL_QEXPR);
     LASSERT(a, (a->cell[0]->count != 0), "Function 'tail' passed {}!");
     
     
@@ -762,9 +781,7 @@ lval* builtin_list(lenv* e, lval* a){
 }
 
 lval* builtin_eval(lenv* e, lval* a){
-    LASSERT(a, (a->count == 1),
-            "Function 'eval' passed too many arguments, Got %i, Expected %i",
-            a->count, 1);
+    LASSERT_ARGS("eval", a, 1);
     LASSERT_TYPE("eval", a, 0, LVAL_QEXPR);
     
     lval* x = lval_take(a, 0);
@@ -776,8 +793,6 @@ lval* lval_join_str(lval* a){
     
     
     lval* x = lval_pop(a, 0);
-    
-    
     
     while(a->count){
         lval* y = lval_pop(a, 0);
@@ -793,27 +808,19 @@ lval* lval_join_str(lval* a){
     return x;
 }
 
-lval* ltype_check(lval* a, int expect){
-    
-    for(int i = 0; i < a->count; i++){
-        LASSERT_TYPE("join", a, i, expect);
-    }
-    
-    return lval_num(1);
-}
 
 lval* builtin_join(lenv* e, lval* a){
     lval* x = NULL;
     
     if(a->cell[0]->type == LVAL_QEXPR){
-        ltype_check(a, LVAL_QEXPR);
+        ltype_check("join", a, LVAL_QEXPR);
         x = lval_pop(a, 0);
         
         while(a->count){
             x = lval_join(x, lval_pop(a, 0));
         }
     } else if(a->cell[0]->type == LVAL_STR){
-        ltype_check(a, LVAL_STR);
+        ltype_check("join", a, LVAL_STR);
         x = lval_join_str(a);
 
     }
@@ -1100,8 +1107,16 @@ lval* lval_call(lenv* e, lval* f, lval* a){
 
 lval* lval_read_num(mpc_ast_t* t){
     errno = 0;
-    long x = strtol(t->contents, NULL, 10);
-    return errno != ERANGE ? lval_num(x) : lval_err("invalid number");
+    lval* v = NULL;
+    double x = strtod(t->contents, NULL);
+    
+    if(strstr(t->contents,".")){
+        v = lval_num(x, LVAL_DBL);
+    } else {
+        v = lval_num(x, LVAL_NUM);
+    }
+
+    return errno != ERANGE ?  v : lval_err("invalid number");
 }
 
 lval* lval_read_str(mpc_ast_t* t){
@@ -1226,6 +1241,16 @@ lval* lval_eval_sexpr(lenv* e, lval* v){
     return result;
 }
 
+
+lval* ltype_check(char* func, lval* a, int expect){
+    
+    for(int i = 0; i < a->count; i++){
+        LASSERT_TYPE(func, a, i, expect);
+    }
+    
+    return lval_num(1, LVAL_NUM);
+}
+
 char* ltype_name(int t){
     switch(t){
         case LVAL_QEXPR: return "Q-Expression";
@@ -1292,6 +1317,7 @@ void run_REPL(void){
         /* Parse user input */
         mpc_result_t r;
         if(mpc_parse("<stdin>", input, Blisp, &r)) {
+             
             lval* result = lval_eval(e, lval_read(r.output));
             //TODO: Add verdose mpc_ast_print(r.output);
             lval_println(result);
@@ -1335,7 +1361,7 @@ void run_FILE(int argc,char** argv){
 }
 
 int main(int argc,char** argv){
-    puts("Lisp version 0.0.12");
+    puts("Lisp version 0.0.13");
     puts("Precc Command + C to Exit\n");
     
     /* Define language */
